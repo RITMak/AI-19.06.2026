@@ -1,0 +1,45 @@
+# Secrets
+secrets.properties
+
+# Gradle build artifacts
+build/
+.gradle/
+local.properties
+
+# Android build artifacts
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+
+# IDE files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Profiling & debugging
+captures/
+.externalNativeBuild/
+.navigation/
+*.hprof
+*.keystore
+
+# Logs
+*.log
+
+# Misc
+.cxx/
+*.cxx

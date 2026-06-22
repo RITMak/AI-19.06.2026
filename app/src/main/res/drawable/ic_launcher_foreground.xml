@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Чат-пузырь -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,40 L72,40 Q76,40 76,44 L76,64 Q76,68 72,68 L58,68 L48,76 L48,68 L36,68 Q32,68 32,64 L32,44 Q32,40 36,40Z" />
+    <!-- Текст в пузыре (три точки) -->
+    <path
+        android:fillColor="#1976D2"
+        android:pathData="M44,52 A2,2 0,1,1 44,52.01Z M54,52 A2,2 0,1,1 54,52.01Z M64,52 A2,2 0,1,1 64,52.01Z"
+        android:strokeWidth="0" />
+</vector>
