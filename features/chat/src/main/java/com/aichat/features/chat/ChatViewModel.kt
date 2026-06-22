@@ -176,7 +176,8 @@ class ChatViewModel @Inject constructor(
             streamingText = null,
             showStageConfirm = null,
             hasStageCompleteMarker = false,
-            llmTransitionRejectedMessage = null
+            llmTransitionRejectedMessage = null,
+            subStageTransitionRejectedMessage = null
         )
         userMessageText = ""
 
@@ -283,6 +284,18 @@ class ChatViewModel @Inject constructor(
                     messageRepository.insertMessage(rejectedMsg)
                 }
 
+                val rejectedSubStage = result.fsmSubStageTransitionRejected
+                if (rejectedSubStage != null) {
+                    val rejectedMsg = MessageDomain(
+                        id = UUID.randomUUID().toString(),
+                        chatId = chat.id,
+                        role = Role.SYSTEM,
+                        messageType = MessageType.FSM_REJECT,
+                        text = rejectedSubStage
+                    )
+                    messageRepository.insertMessage(rejectedMsg)
+                }
+
                 // Update total tokens and cost (assistant message only)
                 val assMsg = result.assistantMessage
                 val s = _uiState.value
@@ -349,25 +362,24 @@ class ChatViewModel @Inject constructor(
     }
 
     private suspend fun processFsmMarkers(chatId: String, result: com.aichat.core.domain.usecase.SendMessageResult) {
-        var dbProposedCount = _uiState.value.planProposedCount
+        var updated = _uiState.value.copy(
+            hasStageCompleteMarker = result.fsmStageComplete,
+            llmTransitionRejectedMessage = result.fsmLlmTransitionRejected,
+            subStageTransitionRejectedMessage = result.fsmSubStageTransitionRejected
+        )
+
+        var dbProposedCount = updated.planProposedCount
 
         // Process stage complete — show confirm dialog and increment planProposedCount
         if (result.fsmStageComplete) {
-            val confirmInfo = buildStageConfirmInfo(_uiState.value.currentStage, result.fsmTargetStage)
-            if (!_uiState.value.planConfirmed) {
-                dbProposedCount = _uiState.value.planProposedCount + 1
+            val confirmInfo = buildStageConfirmInfo(updated.currentStage, result.fsmTargetStage)
+            updated = updated.copy(showStageConfirm = confirmInfo)
+
+            // Increment planProposedCount if plan not confirmed
+            if (!updated.planConfirmed) {
+                dbProposedCount = updated.planProposedCount + 1
+                updated = updated.copy(planProposedCount = dbProposedCount)
             }
-            _uiState.value = _uiState.value.copy(
-                hasStageCompleteMarker = true,
-                showStageConfirm = confirmInfo,
-                planProposedCount = dbProposedCount,
-                llmTransitionRejectedMessage = result.fsmLlmTransitionRejected
-            )
-        } else {
-            _uiState.value = _uiState.value.copy(
-                hasStageCompleteMarker = false,
-                llmTransitionRejectedMessage = result.fsmLlmTransitionRejected
-            )
         }
 
         // Save state to DB
@@ -379,6 +391,42 @@ class ChatViewModel @Inject constructor(
             )
             chatStateRepository.upsert(updatedState)
         }
+
+        if (updated.planConfirmed) {
+            // Steps advance ONLY if plan confirmed
+
+            // Process subStage markers
+            val parsedSubStagesTotal = result.fsmSubStagesTotal
+            if (parsedSubStagesTotal != null) {
+                updated = updated.copy(subStagesTotal = parsedSubStagesTotal)
+            }
+
+            val parsedSubStage = result.fsmSubStage
+            if (parsedSubStage != null) {
+                // subStage is 1-based in marker, 0-based internally
+                val newSubStage = parsedSubStage - 1
+                updated = updated.copy(subStage = newSubStage)
+            }
+
+            val parsedSubStageLabel = result.fsmSubStageLabel
+            if (parsedSubStageLabel != null) {
+                updated = updated.copy(subStageLabel = parsedSubStageLabel)
+            }
+        } else {
+            // Plan not confirmed — save only subStagesTotal and subStageLabel
+            // (needed for displaying plan structure), but do NOT advance subStage
+            val parsedSubStagesTotal = result.fsmSubStagesTotal
+            if (parsedSubStagesTotal != null) {
+                updated = updated.copy(subStagesTotal = parsedSubStagesTotal)
+            }
+
+            val parsedSubStageLabel = result.fsmSubStageLabel
+            if (parsedSubStageLabel != null) {
+                updated = updated.copy(subStageLabel = parsedSubStageLabel)
+            }
+        }
+
+        _uiState.value = updated
     }
 
     private fun buildStageConfirmInfo(

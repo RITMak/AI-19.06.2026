@@ -34,6 +34,7 @@ data class ChatUiState(
     val showStageConfirm: StageConfirmInfo? = null,
     val hasStageCompleteMarker: Boolean = false,
     val llmTransitionRejectedMessage: String? = null,
+    val subStageTransitionRejectedMessage: String? = null,
     val firstUserQuery: String = "",
     val planningResult: String = "",
     val executionResult: String = ""

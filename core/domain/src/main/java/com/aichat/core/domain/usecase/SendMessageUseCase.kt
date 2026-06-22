@@ -30,8 +30,15 @@ data class SendMessageResult(
     // FSM markers parsed from assistant response
     val fsmStageComplete: Boolean = false,
     val fsmTargetStage: ChatStage? = null,
+    // SubStage markers
+    val fsmSubStage: Int? = null,
+    val fsmSubStagesTotal: Int? = null,
+    val fsmSubStageLabel: String? = null,
+    val planLabels: List<String> = emptyList(),
     // Stage transition validation
-    val fsmLlmTransitionRejected: String? = null
+    val fsmLlmTransitionRejected: String? = null,
+    // SubStage transition validation
+    val fsmSubStageTransitionRejected: String? = null
 )
 
 data class MemoryContext(
@@ -249,6 +256,24 @@ class SendMessageUseCase @Inject constructor(
         val fsmStageComplete = fullText.contains("[STAGE_COMPLETE]")
         val fsmTargetStage = parseStageMarker(fullText)
 
+        // --- Parse SubStage markers ---
+        val fsmSubStage = parseSubStageMarker(fullText)
+        val fsmSubStagesTotal = parseSubStagesTotalMarker(fullText)
+        val fsmSubStageLabel = parseSubStageLabelMarker(fullText)
+        val planLabels = parseAllSubStageLabels(fullText)
+
+        // --- Validate SubStage transition ---
+        var fsmSubStageTransitionRejected: String? = null
+        if (fsmSubStage != null && chatState != null) {
+            val expected = chatState.subStage + 1
+            if (fsmSubStage != expected) {
+                fsmSubStageTransitionRejected = buildSubStageRejectedMessage(
+                    current = chatState.subStage,
+                    attempted = fsmSubStage
+                )
+            }
+        }
+
         // --- Validate Stage transition (LLM) ---
         var fsmLlmTransitionRejected: String? = null
         if (fsmTargetStage != null && chatState != null) {
@@ -262,6 +287,11 @@ class SendMessageUseCase @Inject constructor(
         val finalStageComplete = if (fsmLlmTransitionRejected != null) false else fsmStageComplete
         val finalTargetStage = if (fsmLlmTransitionRejected != null) null else fsmTargetStage
 
+        // If subStage transition rejected, ignore subStage change
+        val finalSubStage = if (fsmSubStageTransitionRejected != null) null else fsmSubStage
+        val finalSubStagesTotal = if (fsmSubStageTransitionRejected != null) null else fsmSubStagesTotal
+        val finalSubStageLabel = if (fsmSubStageTransitionRejected != null) null else fsmSubStageLabel
+
         // Clean markers from display text before saving
         val cleanFullText = cleanMarkers(fullText)
 
@@ -270,7 +300,7 @@ class SendMessageUseCase @Inject constructor(
             chatId = chatId,
             role = Role.ASSISTANT,
             text = cleanFullText,
-            textClean = TextCleaner.clean(cleanFullText), // cleaned version for LLM history (no markers, no noise)
+            textClean = TextCleaner.clean(cleanFullText), // cleaned version for LLM history
             totalTokens = result.totalTokens,
             promptTokens = result.promptTokens,
             completionTokens = result.completionTokens,
@@ -287,21 +317,16 @@ class SendMessageUseCase @Inject constructor(
             summaryMessage = null,
             fsmStageComplete = finalStageComplete,
             fsmTargetStage = finalTargetStage,
-            fsmLlmTransitionRejected = fsmLlmTransitionRejected
+            fsmSubStage = finalSubStage,
+            fsmSubStagesTotal = finalSubStagesTotal,
+            fsmSubStageLabel = finalSubStageLabel,
+            planLabels = planLabels,
+            fsmLlmTransitionRejected = fsmLlmTransitionRejected,
+            fsmSubStageTransitionRejected = fsmSubStageTransitionRejected
         )
     }
 
     // --- Marker parsing ---
-
-    private fun parseStepMarker(text: String): Int? {
-        val regex = """\[STEP:\s*(\d+)]""".toRegex()
-        return regex.find(text)?.groupValues?.get(1)?.toIntOrNull()
-    }
-
-    private fun parseTotalStepsMarker(text: String): Int? {
-        val regex = """\[STEPS:\s*(\d+)]""".toRegex()
-        return regex.find(text)?.groupValues?.get(1)?.toIntOrNull()
-    }
 
     private fun parseStageMarker(text: String): ChatStage? {
         val regex = """\[STAGE:\s*(\w+)]""".toRegex()
@@ -337,16 +362,12 @@ class SendMessageUseCase @Inject constructor(
     }
 
     private fun cleanMarkers(text: String): String {
-        val stepRegex = """\[STEP:\s*\d+]""".toRegex()
-        val stepsRegex = """\[STEPS:\s*\d+]""".toRegex()
         val stageCompleteRegex = """\[STAGE_COMPLETE]""".toRegex()
         val stageRegex = """\[STAGE:\s*\w+]""".toRegex()
         val subStageRegex = """\[SUBSTAGE:\s*\d+]""".toRegex()
         val subStagesRegex = """\[SUBSTAGES:\s*\d+]""".toRegex()
         val subStageLabelRegex = """\[SUBSTAGE_LABEL:\s*.*?]""".toRegex()
         return text
-            .replace(stepRegex, "")
-            .replace(stepsRegex, "")
             .replace(stageCompleteRegex, "")
             .replace(stageRegex, "")
             .replace(subStageRegex, "")
@@ -363,13 +384,16 @@ class SendMessageUseCase @Inject constructor(
         val executionResult = chatState.executionResult
 
         val basePrompt = if (chatState.planConfirmed) {
-            // === VARIANT 3: PLAN CONFIRMED — EXECUTE AND COMPLETE STAGE ===
+            // === VARIANT 3: PLAN CONFIRMED — EXECUTING SUB-STAGES ===
             when (chatState.stage) {
                 ChatStage.PLANNING -> TextCleaner.clean(
                     "You are in the PLANNING stage. Plan has been confirmed.\n" +
                     "User query: *** ${userQuery} ***\n" +
-                    "Execute the plan and produce the result.\n" +
-                    "When done, output:\n" +
+                    "Current step: ${chatState.subStage + 2}/${chatState.subStagesTotal + 1} (plan approval is already done).\n" +
+                    "Your answer must cover step: \"${chatState.subStageLabel}\".\n" +
+                    "Ask clarifying questions one at a time. Do NOT provide final solutions or code yet.\n" +
+                    "Wait for the user's answer before moving to the next point.\n" +
+                    "When ALL sub-stages are clarified and user confirms, output:\n" +
                     "  [STAGE_COMPLETE]\n" +
                     "  [STAGE: EXECUTION]\n" +
                     "Allowed LLM transitions: PLANNING -> EXECUTION.\n" +
@@ -380,8 +404,10 @@ class SendMessageUseCase @Inject constructor(
                     "User query: *** ${userQuery} ***\n" +
                     "On the PLANNING stage we received the following result:\n" +
                     "*** ${planningResult} ***\n" +
-                    "Execute the plan and produce the result.\n" +
-                    "When done, output:\n" +
+                    "Current step: ${chatState.subStage + 2}/${chatState.subStagesTotal + 1} (plan approval is already done).\n" +
+                    "Your answer must cover step: \"${chatState.subStageLabel}\".\n" +
+                    "Execute this step. Provide the result.\n" +
+                    "When ALL sub-stages are complete, output:\n" +
                     "  [STAGE_COMPLETE]\n" +
                     "  [STAGE: DONE]\n" +
                     "Allowed LLM transitions: EXECUTION -> DONE.\n" +
@@ -393,7 +419,7 @@ class SendMessageUseCase @Inject constructor(
                     "On the EXECUTION stage we received the following result:\n" +
                     "*** ${executionResult} ***\n" +
                     "Task is completed. Summarize the result.\n" +
-                    "Output markers:\n" +
+                    "Output:\n" +
                     "  [STAGE_COMPLETE]\n" +
                     "If user writes a new message, they may be starting a new task — that is their choice.\n" +
                     "To reopen existing task: output [STAGE: EXECUTION] [STAGE_COMPLETE]."
@@ -408,7 +434,11 @@ class SendMessageUseCase @Inject constructor(
                     "You must provide a step-by-step plan for the user's request.\n" +
                     "The plan should look like: 1) ... 2) ... 3) ... etc.\n" +
                     "Write a readable plan as text — user will see this message directly.\n" +
-                    "After the plan, output:\n" +
+                    "After the plan, output markers:\n" +
+                    "  [SUBSTAGES: N] — number of steps\n" +
+                    "  [SUBSTAGE_LABEL: step 1 title]\n" +
+                    "  [SUBSTAGE_LABEL: step 2 title]\n" +
+                    "  ...\n" +
                     "  [STAGE_COMPLETE] — so user can confirm the plan.\n" +
                     "Do NOT ask questions. Just show the plan.\n" +
                     "Allowed LLM transitions: PLANNING -> EXECUTION.\n" +
@@ -421,7 +451,11 @@ class SendMessageUseCase @Inject constructor(
                     "You must provide an execution plan for the user's request.\n" +
                     "The plan should look like: 1) ... 2) ... 3) ... etc.\n" +
                     "Write a readable execution plan as text — user will see this message directly.\n" +
-                    "After the plan, output:\n" +
+                    "After the plan, output markers:\n" +
+                    "  [SUBSTAGES: N] — number of steps\n" +
+                    "  [SUBSTAGE_LABEL: step 1 title]\n" +
+                    "  [SUBSTAGE_LABEL: step 2 title]\n" +
+                    "  ...\n" +
                     "  [STAGE_COMPLETE] — so user can confirm the plan.\n" +
                     "Do NOT execute yet. Just show the plan.\n" +
                     "Allowed LLM transitions: EXECUTION -> DONE.\n" +
@@ -448,7 +482,11 @@ class SendMessageUseCase @Inject constructor(
                     "User wants to improve the previously proposed plan.\n" +
                     "Update the previous plan based on user feedback.\n" +
                     "Write an updated readable plan.\n" +
-                    "After the plan, output:\n" +
+                    "After the plan, output markers:\n" +
+                    "  [SUBSTAGES: N]\n" +
+                    "  [SUBSTAGE_LABEL: step 1 title]\n" +
+                    "  [SUBSTAGE_LABEL: step 2 title]\n" +
+                    "  ...\n" +
                     "  [STAGE_COMPLETE]\n" +
                     "Do NOT ask questions. Just improve the plan.\n" +
                     "Allowed LLM transitions: PLANNING -> EXECUTION.\n" +
@@ -461,7 +499,11 @@ class SendMessageUseCase @Inject constructor(
                     "User wants to improve the previously proposed execution plan.\n" +
                     "Update the previous execution plan based on user feedback.\n" +
                     "Write an updated readable execution plan.\n" +
-                    "After the plan, output:\n" +
+                    "After the plan, output markers:\n" +
+                    "  [SUBSTAGES: N]\n" +
+                    "  [SUBSTAGE_LABEL: step 1 title]\n" +
+                    "  [SUBSTAGE_LABEL: step 2 title]\n" +
+                    "  ...\n" +
                     "  [STAGE_COMPLETE]\n" +
                     "Do NOT execute yet. Just improve the plan.\n" +
                     "Allowed LLM transitions: EXECUTION -> DONE.\n" +
